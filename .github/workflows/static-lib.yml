@@ -34,8 +34,10 @@ jobs:
       - name: Ensure Windows SDK 10.0.22621 and MSVC 14.44
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $vs = & $vswhere -latest -products * -version '[17.0,18.0)' -property installationPath
-          Write-Host "Visual Studio: $vs ($(& $vswhere -latest -products * -version '[17.0,18.0)' -property catalog_productDisplayVersion))"
+          $range = '[17.0,18.0)'
+          $vs = & $vswhere -latest -products * -version $range -property installationPath
+          $vsVer = & $vswhere -latest -products * -version $range -property catalog_productDisplayVersion
+          Write-Host "Visual Studio: $vs ($vsVer)"
           $add = @()
           if (-not (Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\windows.h')) {
             $add += 'Microsoft.VisualStudio.Component.Windows11SDK.22621'
