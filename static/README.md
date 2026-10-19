@@ -7,8 +7,8 @@ This branch of [pbk20191/Win2D](https://github.com/pbk20191/Win2D) is upstream
 | File | Purpose |
 |---|---|
 | `static/module_static.cpp` | Replacement for `winrt/dll/module.cpp`: no `DllMain`, exports `Win2DStatic_DllGetActivationFactory` / `Win2DStatic_DllGetClassObject`. |
-| `static/build-static.ps1` | Restores packages, builds `winrt.lib` and `win2dmod.lib` for one platform, stages them with `BUILDINFO.txt`. |
-| `.github/workflows/static-lib.yml` | CI: builds x64 and ARM64 and uploads `win2d-static-x64` / `win2d-static-ARM64` artifacts (90-day retention). |
+| `static/build-static.ps1` | Restores packages, builds `winrt.lib` and `win2dmod.lib` for one platform, stages them with their PDBs and `BUILDINFO.txt`. |
+| `.github/workflows/static-lib.yml` | CI: builds x64 and ARM64 and uploads `win2d-static-x64` / `win2d-static-ARM64` artifacts (90-day retention). A `win2d-static-v*` tag also publishes a GitHub Release. |
 
 No existing Win2D file is modified. Everything is driven by MSBuild global properties.
 
@@ -30,6 +30,29 @@ shipping `Microsoft.Graphics.Canvas.dll`. Microsoft does not support Win2D built
 - Toolset: MSVC is pinned to the newest installed 14.44.x or older (`-MaxMsvc`), because
   consumers link with MSVC 14.44.35207 and objects from a newer compiler can need a newer linker.
   `BUILDINFO.txt` records the exact MSVC, `cl` and SDK versions.
+- Debug info: both libs are compiled `/Zi`. `winrt.lib` is built by the unmodified upstream
+  project, whose objects reference the compiler PDB `winrt.pdb` (`/Fd$(OutDir)winrt.pdb`); the shim
+  is compiled with `/Fd...\win2dmod.pdb`. The recorded paths are absolute build-machine paths,
+  but `link.exe` first looks for the PDB by file name next to the `.lib`, so both PDBs are
+  shipped beside their libs under exactly those names.
+
+## Downloads
+
+Tagged builds are published as [GitHub Releases](https://github.com/pbk20191/Win2D/releases).
+Tag `win2d-static-v<version>` (for example `win2d-static-v1.4.0-1`: Win2D 1.4.0, build 1) has:
+
+```
+https://github.com/pbk20191/Win2D/releases/download/win2d-static-v<version>/win2d-static-<version>-x64.zip
+https://github.com/pbk20191/Win2D/releases/download/win2d-static-v<version>/win2d-static-<version>-ARM64.zip
+https://github.com/pbk20191/Win2D/releases/download/win2d-static-v<version>/SHA256SUMS.txt
+```
+
+Each zip holds `winrt.lib`, `winrt.pdb`, `win2dmod.lib`, `win2dmod.pdb` and `BUILDINFO.txt` at
+its root. Check it with `sha256sum -c SHA256SUMS.txt` (or `Get-FileHash`). x64 is smoke-tested
+by linking and running a NativeAOT probe; ARM64 is build-verified only and has not been run.
+This is an unofficial build of MIT-licensed Win2D, not supported by Microsoft.
+
+Untagged pushes to `static-lib` only produce workflow artifacts with the same contents.
 
 ## Build locally
 
@@ -46,8 +69,8 @@ If winmdidl or abi.exe fails because the checkout path is too long (MAX_PATH), a
 
 ## Consuming from a NativeAOT project
 
-Download the artifact for your RID (`win2d-static-x64` for `win-x64`, `win2d-static-ARM64` for
-`win-arm64`) and add the following to the csproj:
+Download the release zip (or workflow artifact) for your RID (`x64` for `win-x64`, `ARM64` for
+`win-arm64`), unzip it into one folder, and add the following to the csproj:
 
 ```xml
 <PropertyGroup>
@@ -69,6 +92,12 @@ Download the artifact for your RID (`win2d-static-x64` for `win-x64`, `win2d-sta
   <LinkerArg Include="/DELAYLOAD:d3dcompiler_47.dll" />
 </ItemGroup>
 ```
+
+Keep `winrt.pdb` and `win2dmod.pdb` in the same folder as the libs. If they are missing or
+renamed, the link still succeeds but prints one `LNK4099: PDB 'winrt.pdb' was not found` warning
+per object (about 140) and the exe's PDB has no Win2D type or local-variable information. With
+the PDBs in place the link prints no LNK4099. The PDBs are only read at link time; nothing
+needs to ship with the exe.
 
 ### Routing activation with CsWinRT
 

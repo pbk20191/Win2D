@@ -9,7 +9,8 @@
      objects that any linker of the same or newer MSVC can consume).
   3. Compiles static\module_static.cpp (the replacement for winrt\dll\module.cpp) with the same
      MSVC toolset and target, and packs it into win2dmod.lib.
-  4. Stages winrt.lib, win2dmod.lib and BUILDINFO.txt into -OutDir.
+  4. Stages winrt.lib, win2dmod.lib, the compiler PDBs their /Zi objects reference (winrt.pdb,
+     win2dmod.pdb) and BUILDINFO.txt into -OutDir.
 
   The MSVC toolset is pinned to the newest installed version that is not newer than -MaxMsvc
   (default 14.44), because consumers link with MSVC 14.44.x and a .lib compiled by a newer
@@ -127,9 +128,9 @@ try {
     $shimObj = Join-Path $repo "static\obj\$Platform"
     New-Item -ItemType Directory -Force $shimObj | Out-Null
     $src = Join-Path $repo 'static\module_static.cpp'
-    $clFlags = "/nologo /c /MT /O1 /EHsc /std:c++17 /GR- /Qspectre /guard:cf /W4 /WX /DNDEBUG /DUNICODE /D_UNICODE /DWINUI3"
+    $clFlags = "/nologo /c /MT /O1 /EHsc /std:c++17 /GR- /Qspectre /guard:cf /W4 /WX /Zi /DNDEBUG /DUNICODE /D_UNICODE /DWINUI3"
     $cmd = "call `"$vcvarsall`" $vcArch $SdkVersion -vcvars_ver=$msvcVer >nul " +
-           "&& cl $clFlags /I `"$($etwHeader.DirectoryName)`" /Fo`"$shimObj\module_static.obj`" `"$src`" " +
+           "&& cl $clFlags /I `"$($etwHeader.DirectoryName)`" /Fo`"$shimObj\module_static.obj`" /Fd`"$shimObj\win2dmod.pdb`" `"$src`" " +
            "&& lib /nologo /out:`"$shimObj\win2dmod.lib`" `"$shimObj\module_static.obj`" " +
            "&& cl 2>&1 | findstr /C:`"Version`""
     Write-Host "==> win2dmod.lib ($vcArch, MSVC $msvcVer)"
@@ -142,6 +143,26 @@ try {
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     Copy-Item $winrtLib.FullName (Join-Path $OutDir 'winrt.lib') -Force
     Copy-Item "$shimObj\win2dmod.lib" (Join-Path $OutDir 'win2dmod.lib') -Force
+
+    # Debug info: both libs are compiled /Zi, so every object records the absolute path of a
+    # compiler (type server) PDB. link.exe looks for that PDB by file name next to the .lib
+    # first and only then at the recorded build-machine path, so staging each referenced PDB
+    # beside its .lib under the same name avoids LNK4099 and gives consumers Win2D symbols.
+    $pdbs = @()
+    foreach ($lib in @($winrtLib.FullName, "$shimObj\win2dmod.lib")) {
+        $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($lib))
+        $refs = [regex]::Matches($text, '[A-Za-z]:\\[ -~]{1,240}?\.pdb') | ForEach-Object Value | Sort-Object -Unique
+        if (-not $refs) { throw "$lib references no PDB; expected /Zi objects." }
+        foreach ($ref in $refs) {
+            $name = Split-Path $ref -Leaf
+            $local = Join-Path (Split-Path $lib -Parent) $name
+            if (-not (Test-Path $local)) { $local = $ref }
+            if (-not (Test-Path $local)) { throw "PDB $ref referenced by $lib was not found." }
+            Write-Host "PDB: $(Split-Path $lib -Leaf) -> $ref"
+            Copy-Item $local (Join-Path $OutDir $name) -Force
+            $pdbs += $name
+        }
+    }
 
     $branchSha = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { (git -C $repo rev-parse HEAD) }
     $image = if ($env:ImageOS) { "$env:ImageOS $env:ImageVersion" } else { 'local' }
@@ -157,7 +178,8 @@ try {
         "WholeProgramOpt:    false"
         "Build date (UTC):   $([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
         "Runner image:       $image"
-        "Files:              winrt.lib ($((Get-Item (Join-Path $OutDir 'winrt.lib')).Length) bytes), win2dmod.lib ($((Get-Item (Join-Path $OutDir 'win2dmod.lib')).Length) bytes)"
+        "Debug info:         /Zi; compiler PDBs staged next to the libs ($($pdbs -join ', '))"
+        "Files:              $((@('winrt.lib', 'win2dmod.lib') + $pdbs | ForEach-Object { "$_ ($((Get-Item (Join-Path $OutDir $_)).Length) bytes)" }) -join ', ')"
     ) | Set-Content -Encoding utf8 (Join-Path $OutDir 'BUILDINFO.txt')
     Get-Content (Join-Path $OutDir 'BUILDINFO.txt') | Write-Host
 }
